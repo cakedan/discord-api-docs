@@ -9,6 +9,8 @@ Once you have an established [voice connection](/developers/topics/voice-connect
 
 You can choose which users' voice data the voice server sends you with [Media Sink Wants](/developers/topics/voice-connections#media-sink-wants).
 
+Video is received over the same connection and needs a few more steps, described in [Video Receive](/developers/topics/video-receive).
+
 ## Identifying Users
 
 Every user sending voice data has their own SSRC, which is included in the RTP header of each of their packets. The voice gateway tells you which user an SSRC belongs to with an [Opcode 5 Speaking](/developers/topics/voice-connections#speaking-example-received-speaking-payload) payload, which includes the `user_id` and `ssrc` of a user. Keep a map of SSRCs to user IDs and update it with every Speaking payload you receive.

@@ -1,0 +1,308 @@
+---
+title: Video Receive
+description: Technical guide to receiving and decrypting video from a Discord voice connection.
+---
+
+import {ManualAnchor} from '/snippets/manualanchor.jsx'
+
+Users in a voice channel can turn on their camera, and the voice server can forward their video to you over the same UDP connection that carries voice data. Receiving video builds on [Voice Receive](/developers/topics/voice-receive): packets are parsed and decrypted the same way, but a video frame is split across many RTP packets, so you have to put the frame back together before you can remove its end-to-end encryption and decode it.
+
+To receive video, tell the voice server that you support video when you connect and list the video codecs you can receive. You can then choose whose video you receive with [Media Sink Wants](/developers/topics/video-receive#choosing-video-to-receive).
+
+<Info>
+This page covers camera video in a voice channel. Go Live streams are sent over a separate voice connection and are not covered here.
+</Info>
+
+## Enabling Video
+
+Set `video` to `true` in your [Opcode 0 Identify](/developers/topics/opcodes-and-status-codes#voice) payload. Without it, the voice server does not send you video.
+
+<ManualAnchor id="enabling-video-example-voice-identify-payload-with-video" />
+###### Example Voice Identify Payload With Video
+
+```json
+{
+  "op": 0,
+  "d": {
+    "server_id": "41771983423143937",
+    "user_id": "104694319306248192",
+    "session_id": "my_session_id",
+    "token": "my_token",
+    "max_dave_protocol_version": 1,
+    "video": true
+  }
+}
+```
+
+### Codecs
+
+Include a `codecs` array in your [Opcode 1 Select Protocol](/developers/topics/opcodes-and-status-codes#voice) payload with every audio and video codec you can use. You choose the RTP payload type of each codec, and the voice server sends you each codec's packets with the payload type you chose. Video codecs also have a retransmission (RTX) payload type, used for packets that are sent again after they were lost.
+
+<ManualAnchor id="codecs-codec-object" />
+###### Codec Object
+
+| Field             | Type    | Description                                                                   |
+|-------------------|---------|-------------------------------------------------------------------------------|
+| name              | string  | [Name](/developers/topics/video-receive#codecs-video-codecs) of the codec     |
+| type              | string  | `audio` or `video`                                                            |
+| priority          | integer | Order of preference between codecs of the same type, where lower is preferred |
+| payload_type      | integer | RTP payload type of the codec's packets                                       |
+| rtx_payload_type? | integer | RTP payload type of the codec's retransmitted packets, only for video codecs  |
+| encode?           | boolean | Whether you can send video with this codec                                    |
+| decode?           | boolean | Whether you can receive video with this codec                                 |
+
+Opus always uses a payload type of `120`. Discord's clients give video codecs payload types from `101` upwards in order of preference, two at a time, with the RTX payload type one higher than the payload type. Use payload types the same way, and give each payload type to only one codec.
+
+<ManualAnchor id="codecs-video-codecs" />
+###### Video Codecs
+
+| Name   | RTP Payload Format                                                         |
+|--------|----------------------------------------------------------------------------|
+| `AV1`  | [RTP Payload Format For AV1](https://aomediacodec.github.io/av1-rtp-spec/) |
+| `H265` | [RFC 7798](https://www.rfc-editor.org/rfc/rfc7798.html)                    |
+| `H264` | [RFC 6184](https://www.rfc-editor.org/rfc/rfc6184.html)                    |
+| `VP8`  | [RFC 7741](https://www.rfc-editor.org/rfc/rfc7741.html)                    |
+| `VP9`  | [RFC 9628](https://www.rfc-editor.org/rfc/rfc9628.html)                    |
+
+<ManualAnchor id="codecs-example-select-protocol-payload-with-codecs" />
+###### Example Select Protocol Payload With Codecs
+
+```json
+{
+  "op": 1,
+  "d": {
+    "protocol": "udp",
+    "data": {
+      "address": "127.0.0.1",
+      "port": 1337,
+      "mode": "aead_aes256_gcm_rtpsize"
+    },
+    "codecs": [
+      {
+        "name": "opus",
+        "type": "audio",
+        "priority": 1000,
+        "payload_type": 120
+      },
+      {
+        "name": "H264",
+        "type": "video",
+        "priority": 1000,
+        "payload_type": 101,
+        "rtx_payload_type": 102,
+        "encode": false,
+        "decode": true
+      },
+      {
+        "name": "VP8",
+        "type": "video",
+        "priority": 2000,
+        "payload_type": 103,
+        "rtx_payload_type": 104,
+        "encode": false,
+        "decode": true
+      }
+    ]
+  }
+}
+```
+
+You can send a new list of codecs at any time with an [Opcode 14 Session Update](/developers/topics/opcodes-and-status-codes#voice) payload, for example if a decoder stops working.
+
+<ManualAnchor id="codecs-example-session-update-payload" />
+###### Example Session Update Payload
+
+```json
+{
+  "op": 14,
+  "d": {
+    "codecs": [...]
+  }
+}
+```
+
+The voice server picks the video codec that users in the call send with, from the codecs everyone in the call can use. [Opcode 4 Session Description](/developers/topics/opcodes-and-status-codes#voice) includes the picked codec as `video_codec`, and the voice server sends an Opcode 14 Session Update payload with a new `video_codec` when it picks another one, for example when a user joins who can't decode the current codec.
+
+<Info>
+`video_codec` is the codec you should send video with. Use the payload type of each packet you receive to tell its codec, since packets of the previous codec can still arrive after the codec changes.
+</Info>
+
+## Identifying Video Streams
+
+A user's video has its own SSRC, separate from the SSRC of their voice data, and retransmitted video packets have another SSRC. The voice gateway tells you these SSRCs with an [Opcode 12 Video](/developers/topics/opcodes-and-status-codes#voice) payload when a user turns their video on or off, and right after [Opcode 2 Ready](/developers/topics/opcodes-and-status-codes#voice) for each user whose video is already on.
+
+<ManualAnchor id="identifying-video-streams-video-payload-structure" />
+###### Video Payload Structure
+
+| Field      | Type                                                                                                   | Description                                           |
+|------------|--------------------------------------------------------------------------------------------------------|-------------------------------------------------------|
+| user_id    | snowflake                                                                                              | ID of the user                                        |
+| audio_ssrc | integer                                                                                                | SSRC of the user's voice data                         |
+| video_ssrc | integer                                                                                                | SSRC of the user's video, `0` when their video is off |
+| streams    | array of [stream](/developers/topics/video-receive#identifying-video-streams-stream-structure) objects | Video streams of the user                             |
+
+<ManualAnchor id="identifying-video-streams-stream-structure" />
+###### Stream Structure
+
+| Field           | Type    | Description                                                                                      |
+|-----------------|---------|--------------------------------------------------------------------------------------------------|
+| type            | string  | Type of the stream, `video` for a camera                                                         |
+| rid             | string  | Identifier of the stream among the user's streams                                                |
+| ssrc            | integer | SSRC of the stream's video                                                                       |
+| rtx_ssrc        | integer | SSRC of the stream's retransmitted video                                                         |
+| active          | boolean | Whether the user is sending video on this stream                                                 |
+| quality         | integer | Quality of the stream from `0` to `100`, where `100` is the full resolution                      |
+| max_bitrate?    | integer | Maximum bitrate of the stream in bits per second                                                 |
+| max_framerate?  | integer | Maximum framerate of the stream                                                                  |
+| max_resolution? | object  | Maximum resolution of the stream, with a `type` of `fixed` or `source`, a `width` and a `height` |
+
+<ManualAnchor id="identifying-video-streams-example-video-payload" />
+###### Example Video Payload
+
+```json
+{
+  "op": 12,
+  "d": {
+    "user_id": "104694319306248192",
+    "audio_ssrc": 2,
+    "video_ssrc": 3,
+    "streams": [
+      {
+        "type": "video",
+        "rid": "100",
+        "ssrc": 3,
+        "rtx_ssrc": 4,
+        "active": true,
+        "quality": 100,
+        "max_bitrate": 2500000,
+        "max_framerate": 30,
+        "max_resolution": {
+          "type": "fixed",
+          "width": 1280,
+          "height": 720
+        }
+      }
+    ]
+  }
+}
+```
+
+Keep a map of video SSRCs to user IDs, and a map of RTX SSRCs to the video SSRC they retransmit. Each Video payload describes all of a user's video, so remove the user's previous video SSRCs before adding the new ones. If `streams` is empty and `video_ssrc` is not `0`, the user's video uses `video_ssrc`, and its RTX SSRC is `video_ssrc + 1`. When a user leaves the voice channel, remove their SSRCs when you receive [Opcode 13 Client Disconnect](/developers/topics/voice-connections#clients-connect-and-disconnect).
+
+A user can send the same video at more than one quality at once, which is called simulcast. Each quality is a separate stream with its own SSRC and `quality`.
+
+## Choosing Video to Receive
+
+Once you have [enabled video](/developers/topics/video-receive#enabling-video), the voice server sends you the video of every user in the voice channel, the same as their voice data. You can change this with an [Opcode 15 Media Sink Wants](/developers/topics/voice-connections#media-sink-wants) payload. The `any` key applies to video too, so to only receive the video of some users, set `any` to `0`, and set the SSRCs of the voice data and video you want to `100`.
+
+For a user with more than one stream, give the SSRC of the stream you want a value, and set the SSRCs of their other streams to `0`. A value below `100` asks the voice server for that stream at a lower quality, which uses less bandwidth.
+
+<ManualAnchor id="choosing-video-to-receive-example-media-sink-wants-payload-for-video" />
+###### Example Media Sink Wants Payload For Video
+
+```json
+{
+  "op": 15,
+  "d": {
+    "any": 0,
+    "2": 100,
+    "3": 100
+  }
+}
+```
+
+In this example, the voice server only sends you the voice data and video of the user from the [example Video payload](/developers/topics/video-receive#identifying-video-streams-example-video-payload).
+
+## Receiving Video Packets
+
+Video packets are received, parsed, and decrypted exactly like [voice packets](/developers/topics/voice-receive#receiving-voice-packets), up to and including [removing the transport encryption](/developers/topics/voice-receive#decrypting-voice-packets). Use the payload type of each packet to tell what it contains:
+
+| Payload Type                            | Packet                                                                                           |
+|-----------------------------------------|--------------------------------------------------------------------------------------------------|
+| `120`                                   | Voice data                                                                                       |
+| The `payload_type` of a video codec     | Video of that codec                                                                              |
+| The `rtx_payload_type` of a video codec | [Retransmitted video](/developers/topics/video-receive#retransmitted-packets) of that codec      |
+| Any other                               | Ignore it. The voice server can send packets with other payload types to estimate your bandwidth |
+
+Use your map of video SSRCs to find the user that a video packet is from.
+
+### Retransmitted Packets
+
+Retransmitted packets follow [RFC 4588](https://www.rfc-editor.org/rfc/rfc4588.html). After removing the transport encryption, the first 2 bytes of the data are the sequence (big endian) of the original packet, and the rest is the payload of the original packet. Use your map of RTX SSRCs to find the video SSRC the packet belongs to, and handle it as a packet of that SSRC with the original sequence.
+
+Retransmitted packets with fewer than 2 bytes of data contain only padding, which the voice server sends to estimate your bandwidth. Ignore them.
+
+## Reassembling Video Frames
+
+A video frame is usually too large for one packet, so it is split across several RTP packets with the same timestamp. The last packet of a frame has the marker bit set. Video timestamps use a 90kHz clock, so a frame sent 1 second after another has a timestamp `90000` higher.
+
+For each video SSRC, use the sequence of its packets to put them back in order and to drop duplicates, the same as for [voice data](/developers/topics/voice-receive#decoding-voice-data). A frame is complete once you have every packet from its first packet to the packet with the marker bit. Each codec's [RTP payload format](/developers/topics/video-receive#codecs-video-codecs) describes the payload descriptor at the start of each packet, how to find the first packet of a frame, and how to join the packets back into the frame:
+
+| Codec  | First Packet of a Frame                                                     |
+|--------|-----------------------------------------------------------------------------|
+| `AV1`  | The first packet after the previous frame's last packet                     |
+| `H265` | The first packet after the previous frame's last packet                     |
+| `H264` | The first packet after the previous frame's last packet                     |
+| `VP8`  | The `S` bit is set and the partition index is `0` in the payload descriptor |
+| `VP9`  | The `B` bit is set in the payload descriptor                                |
+
+Discord's clients send H264 with single NAL unit packets, STAP-A and FU-A, as described in [RFC 6184](https://www.rfc-editor.org/rfc/rfc6184.html#section-5.6). When you join the NAL units of an H264 or H265 frame, write each one with an Annex B start code (`0x00, 0x00, 0x00, 0x01`) in front of it, which is what most decoders and the [DAVE protocol](/developers/topics/video-receive#end-to-end-decryption) expect.
+
+<Warning>
+A video frame usually depends on the frames before it. If a frame is lost, the frames after it can't be decoded until the next keyframe. Drop them and [request a keyframe](/developers/topics/video-receive#requesting-keyframes) instead of decoding them.
+</Warning>
+
+## End-to-End Decryption
+
+In calls using the DAVE protocol, video is end-to-end encrypted per frame, not per packet. Reassemble the frame first, then decrypt it with the key of the user you mapped from its SSRC, as described in [Frame Encryption](/developers/topics/voice-connections#frame-encryption).
+
+Unlike voice data, parts of a video frame are left unencrypted, so that the frame can still be split into packets and put back together. Which parts are left unencrypted depends on the codec, and is described in the [Codec Handling section of the Protocol Whitepaper](https://daveprotocol.com/#codec-handling), so your DAVE implementation needs to know the codec of each frame. [libdave](https://github.com/discord/libdave) handles this for you.
+
+As with voice data, frames that do not end with the `0xFAFA` magic marker are not end-to-end encrypted, and can be received during [protocol transitions](/developers/topics/voice-connections#protocol-transitions). See the [Protocol Frame Check section of the Protocol Whitepaper](https://daveprotocol.com/#protocol-frame-check) for the full check.
+
+<Warning>
+If a keyframe fails to decrypt, drop it and the frames after it, and [request a keyframe](/developers/topics/video-receive#requesting-keyframes).
+</Warning>
+
+## Handling Packet Loss
+
+You can ask the sender of a video stream to send lost packets again, or to send a keyframe, by sending RTCP feedback packets over the UDP connection. The voice server forwards them to the sender.
+
+<ManualAnchor id="handling-packet-loss-rtcp-feedback-packet-structure" />
+###### RTCP Feedback Packet Structure
+
+| Field              | Type                                                 | Size     |
+|--------------------|------------------------------------------------------|----------|
+| Version + Format   | Single byte, `0x80` combined with the format         | 1 byte   |
+| Packet Type        | Single byte, `205` for NACKs and `206` for keyframes | 1 byte   |
+| Length             | Unsigned short (big endian)                          | 2 bytes  |
+| Sender SSRC        | Unsigned integer (big endian)                        | 4 bytes  |
+| Encrypted data     | Media SSRC and feedback                              | n bytes  |
+| Authentication tag | Binary data                                          | 16 bytes |
+| Nonce              | Unsigned integer (big endian)                        | 4 bytes  |
+
+The first 8 bytes are the unencrypted header, which is passed to the cipher as additional data. The rest is encrypted the same way as the payload of an RTP packet you send, with the same `secret_key` and nonce counter. The sender SSRC is your `ssrc` from [Opcode 2 Ready](/developers/topics/opcodes-and-status-codes#voice), and the media SSRC (4 bytes, big endian) is the video SSRC the feedback is about. The length is the length of the packet before encryption, without the authentication tag and nonce, in 32-bit words minus one.
+
+RTCP packets you receive are encrypted the same way, with the first 8 bytes unencrypted.
+
+### Requesting Lost Packets
+
+Send a Generic NACK, as described in [RFC 4585](https://www.rfc-editor.org/rfc/rfc4585.html#section-6.2.1), with a packet type of `205` and a format of `1`. The feedback is one or more 4-byte entries, each with the sequence of a lost packet (big endian), followed by a 16-bit bitmask of which of the 16 packets after it are also lost.
+
+Lost packets are sent again as [retransmitted packets](/developers/topics/video-receive#retransmitted-packets).
+
+### Requesting Keyframes
+
+Send a Picture Loss Indication (PLI), as described in [RFC 4585](https://www.rfc-editor.org/rfc/rfc4585.html#section-6.3.1), with a packet type of `206` and a format of `1`. It has no feedback after the media SSRC.
+
+Request a keyframe when you start receiving a stream, since the first frames you receive can depend on frames you never received, and whenever a frame is lost or fails to decrypt. Keyframes are large, so do not request them more often than every few hundred milliseconds for the same stream.
+
+## Decoding Video
+
+Decode the frames of each video SSRC with a separate decoder, since a video decoder keeps state between frames. Each frame is a complete encoded frame of its codec, and can be passed to most decoders, such as [FFmpeg](https://ffmpeg.org/), as it is.
+
+A user's video has no audio of its own. Their voice data is sent on their voice SSRC, as described in [Voice Receive](/developers/topics/voice-receive).
+
+## Video Recording
+
+Turning on their camera in a voice channel is not a user's consent to have their video recorded by your application. Discord does not tell you whether a user allows their video to be recorded. The [Client Flags](/developers/topics/voice-connections#client-flags) of a user only describe their settings for Discord's Clips feature, as described in [Voice Recording](/developers/topics/voice-receive#voice-recording).

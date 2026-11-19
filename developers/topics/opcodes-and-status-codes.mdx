@@ -70,7 +70,9 @@ Our voice gateways have their own set of opcodes and close codes.
 | 8    | Hello                               | server            | Time to wait between sending heartbeats in milliseconds. |        |
 | 9    | Resumed                             | server            | Acknowledge a successful session resume.                 |        |
 | 11   | Clients Connect                     | server            | One or more clients have connected to the voice channel  |        |
+| 12   | Video                               | client and server | Indicate the video streams of a client                   |        |
 | 13   | Client Disconnect                   | server            | A client has disconnected from the voice channel         |        |
+| 14   | Session Update                      | client and server | Update the codecs of the session                         |        |
 | 15   | Media Sink Wants                    | client and server | Indicate which voice data the client wants to receive    |        |
 | 16   | Voice Backend Version               | client and server | Request or receive the voice server's backend versions   |        |
 | 18   | Client Flags                        | server            | Flags of a client in the voice channel                   |        |

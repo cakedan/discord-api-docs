@@ -462,7 +462,8 @@
             "group": "Voice",
             "pages": [
               "developers/topics/voice-connections",
-              "developers/topics/voice-receive"
+              "developers/topics/voice-receive",
+              "developers/topics/video-receive"
             ]
           },
           {

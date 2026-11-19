@@ -434,10 +434,15 @@ Finally, the voice server will respond with a [Opcode 4 Session Description](/de
   "d": {
       "mode": "aead_aes256_gcm_rtpsize",
       "secret_key": [ ...251, 100, 11...],
-      "dave_protocol_version": 1
+      "dave_protocol_version": 1,
+      "audio_codec": "opus",
+      "video_codec": "H264",
+      "media_session_id": "my_media_session_id"
   }
 }
 ```
+
+The payload also includes the `audio_codec` and `video_codec` the voice server picked for the session, which only matter if you [receive video](/developers/topics/video-receive#codecs) or send it.
 
 We can now start encrypting and sending voice data over the previously established UDP connection.
 
@@ -515,7 +520,7 @@ When there's a break in the sent data, the packet transmission shouldn't simply 
 
 By default, the voice server will send you the voice data of every user in the voice channel over the UDP connection. You can change what it sends you with an [Opcode 15 Media Sink Wants](/developers/topics/opcodes-and-status-codes#voice) payload, so that voice data you don't need is never sent to you.
 
-The payload maps the SSRC of other users to a value between `0` and `100`. A value of `0` means you will not be sent the packets of that SSRC, and a value of `100` means you will. Values in between are used to request lower quality video and have no use for audio. The `any` key is the value used for every SSRC that is not in the payload.
+The payload maps the SSRC of other users to a value between `0` and `100`. A value of `0` means you will not be sent the packets of that SSRC, and a value of `100` means you will. Values in between are used to request lower quality video and have no use for audio, see [Video Receive](/developers/topics/video-receive#choosing-video-to-receive). The `any` key is the value used for every SSRC that is not in the payload.
 
 <ManualAnchor id="media-sink-wants-example-media-sink-wants-payload" />
 ###### Example Media Sink Wants Payload
